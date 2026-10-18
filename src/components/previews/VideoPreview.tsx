@@ -70,6 +70,7 @@ const VideoPlayer: FC<{
   }
   const plyrOptions = {
     autoplay: true,
+    muted: false,
     ratio: `${width ?? 16}:${height ?? 9}`,
     fullscreen: { iosNative: true },
   }
