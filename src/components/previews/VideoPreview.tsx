@@ -36,7 +36,8 @@ const VideoPlayer: FC<{
   subtitle: string
   isFlv: boolean
   mpegts: any
-}> = ({ videoName, videoUrl, width, height, thumbnail, subtitle, isFlv, mpegts }) => {
+  onEnded?: () => void
+}> = ({ videoName, videoUrl, width, height, thumbnail, subtitle, isFlv, mpegts, onEnded }) => {
   useEffect(() => {
     // Really really hacky way to inject subtitles as file blobs into the video element
     axios
