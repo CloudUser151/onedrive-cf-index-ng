@@ -69,6 +69,7 @@ const VideoPlayer: FC<{
     tracks: [{ kind: 'captions', label: videoName, src: '', default: true }],
   }
   const plyrOptions = {
+    autoplay: true,
     ratio: `${width ?? 16}:${height ?? 9}`,
     fullscreen: { iosNative: true },
   }
