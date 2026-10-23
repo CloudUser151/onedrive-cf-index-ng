@@ -125,13 +125,15 @@ const VideoPreview: FC<{ file: OdFileObject }> = ({ file }) => {
       try {
         const pathname = asPath.split('?')[0]
         const parent = pathname.substring(0, pathname.lastIndexOf('/')) || '/'
+        // Next.js asPath is URL-encoded; the OneDrive API expects a decoded filesystem path.
+        const decodedParent = decodeURIComponent(parent)
         const token = getStoredToken(parent) || getStoredToken(asPath)
         const headers = token ? { 'od-protected-token': token } : undefined
         const children: Array<{ name: string }> = []
         let cursor: string | undefined
         do {
           const response = await axios.get('/api', {
-            params: { path: parent, ...(cursor ? { next: cursor } : {}) }, headers,
+            params: { path: decodedParent, ...(cursor ? { next: cursor } : {}) }, headers,
           })
           children.push(...(response.data.folder?.value || []))
           cursor = response.data.next
@@ -141,7 +143,7 @@ const VideoPreview: FC<{ file: OdFileObject }> = ({ file }) => {
           .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }))
         const currentName = decodeURIComponent(pathname.substring(pathname.lastIndexOf('/') + 1))
         const index = videos.findIndex(c => c.name.normalize('NFC').toLowerCase() === currentName.normalize('NFC').toLowerCase())
-        if (index < 0) throw new Error('Current episode not found in folder listing')
+        if (index < 0) throw new Error(`Current episode not found among ${videos.length} videos in folder`)
         const toPath = (name: string) => `${parent === '/' ? '' : parent}/${encodeURIComponent(name)}`
         if (active) {
           setPreviousEpisode(index > 0 ? toPath(videos[index - 1].name) : null)
@@ -149,7 +151,7 @@ const VideoPreview: FC<{ file: OdFileObject }> = ({ file }) => {
         }
       } catch (error) {
         console.error('Unable to find neighboring episodes', error)
-        if (active) setNextError('Could not find adjacent episodes. Please check the folder listing.')
+        if (active) setNextError(`Could not find adjacent episodes: ${axios.isAxiosError(error) ? `API ${error.response?.status || 'network error'}` : error instanceof Error ? error.message : 'unknown error'}`)
       }
     }
     loadNeighbors()
