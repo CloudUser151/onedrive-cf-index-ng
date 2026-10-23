@@ -62,6 +62,30 @@ const VideoPlayer: FC<{
     }
   }, [videoUrl, isFlv, mpegts, subtitle])
 
+  // plyr-react does not forward onEnded as a native video event.
+  // Attach the listener to the actual media element created by Plyr.
+  useEffect(() => {
+    if (!onEnded) return
+    let media: HTMLVideoElement | null = null
+    let observer: MutationObserver | null = null
+    const attach = () => {
+      const candidate = document.querySelector<HTMLVideoElement>('video#plyr')
+        || document.querySelector<HTMLVideoElement>('.plyr video')
+      if (candidate && candidate !== media) {
+        media?.removeEventListener('ended', onEnded)
+        media = candidate
+        media.addEventListener('ended', onEnded)
+      }
+    }
+    attach()
+    observer = new MutationObserver(attach)
+    observer.observe(document.body, { childList: true, subtree: true })
+    return () => {
+      observer?.disconnect()
+      media?.removeEventListener('ended', onEnded)
+    }
+  }, [onEnded, videoUrl])
+
   // Common plyr configs, including the video source and plyr options
   const plyrSource = {
     type: 'video',
@@ -79,7 +103,7 @@ const VideoPlayer: FC<{
     // If the video is not in flv format, we can use the native plyr and add sources directly with the video URL
     plyrSource['sources'] = [{ src: videoUrl }]
   }
-  return <Plyr id="plyr" source={plyrSource as any} options={plyrOptions as any} onEnded={onEnded}/>
+  return <Plyr id="plyr" source={plyrSource as any} options={plyrOptions as any}/>
 }
 
 const VideoPreview: FC<{ file: OdFileObject }> = ({ file }) => {
@@ -156,6 +180,7 @@ const VideoPreview: FC<{ file: OdFileObject }> = ({ file }) => {
           <Loading loadingText={'Loading FLV extension...'} />
         ) : (
           <VideoPlayer
+            key={asPath}
             videoName={file.name}
             videoUrl={videoUrl}
             width={file.video?.width}
