@@ -37,7 +37,8 @@ const VideoPlayer: FC<{
   isFlv: boolean
   mpegts: any
   onEnded?: () => void
-}> = ({ videoName, videoUrl, width, height, thumbnail, subtitle, isFlv, mpegts, onEnded }) => {
+  autoplayNext: boolean
+}> = ({ videoName, videoUrl, width, height, thumbnail, subtitle, isFlv, mpegts, onEnded, autoplayNext }) => {
   useEffect(() => {
     // Really really hacky way to inject subtitles as file blobs into the video element
     axios
@@ -85,6 +86,37 @@ const VideoPlayer: FC<{
       media?.removeEventListener('ended', onEnded)
     }
   }, [onEnded, videoUrl])
+
+  // Explicitly request playback when a new episode page opens. Browsers may
+  // reject unmuted autoplay; leave the normal Play control available in that case.
+  useEffect(() => {
+    if (!autoplayNext) return
+    let cancelled = false
+    let media: HTMLVideoElement | null = null
+    let observer: MutationObserver | null = null
+    const tryPlay = () => {
+      const candidate = document.querySelector<HTMLVideoElement>('video#plyr')
+        || document.querySelector<HTMLVideoElement>('.plyr video')
+      if (!candidate || candidate === media) return
+      media = candidate
+      candidate.muted = false
+      const start = () => {
+        if (cancelled || !candidate.paused) return
+        candidate.play().catch(err => {
+          console.info('Browser prevented autoplay with sound:', err)
+        })
+      }
+      candidate.addEventListener('canplay', start, { once: true })
+      if (candidate.readyState >= 3) start()
+    }
+    tryPlay()
+    observer = new MutationObserver(tryPlay)
+    observer.observe(document.body, { childList: true, subtree: true })
+    return () => {
+      cancelled = true
+      observer?.disconnect()
+    }
+  }, [videoUrl, autoplayNext])
 
   // Common plyr configs, including the video source and plyr options
   const plyrSource = {
@@ -215,6 +247,7 @@ const VideoPreview: FC<{ file: OdFileObject }> = ({ file }) => {
             isFlv={isFlv}
             mpegts={mpegts}
             onEnded={onVideoEnded}
+            autoplayNext={autoplayNext}
           />
         )}
       </PreviewContainer>
