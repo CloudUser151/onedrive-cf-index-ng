@@ -1,6 +1,6 @@
 import type { OdFileObject } from '../../types'
 
-import { FC, useEffect, useRef, useState } from 'react'
+import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/router'
 
 import axios from 'axios'
@@ -110,40 +110,63 @@ const VideoPreview: FC<{ file: OdFileObject }> = ({ file }) => {
   const router = useRouter()
   const { asPath } = router
   const advancing = useRef(false)
-  useEffect(() => { advancing.current = false }, [asPath])
+  const [nextEpisode, setNextEpisode] = useState<string | null>(null)
+  const [previousEpisode, setPreviousEpisode] = useState<string | null>(null)
+  const [nextError, setNextError] = useState('')
+  const [autoplayNext, setAutoplayNext] = useState(true)
 
-  const playNext = async () => {
-    if (advancing.current) return
-    advancing.current = true
-    try {
-      const pathname = asPath.split('?')[0]
-      const parent = pathname.substring(0, pathname.lastIndexOf('/')) || '/'
-      const token = getStoredToken(parent) || getStoredToken(asPath)
-      const headers = token ? { 'od-protected-token': token } : undefined
-      const children: Array<{ name: string; file?: unknown; video?: unknown }> = []
-      let next: string | undefined
-      do {
-        const response = await axios.get('/api', {
-          params: { path: parent, ...(next ? { next } : {}) }, headers,
-        })
-        children.push(...(response.data.folder?.value || []))
-        next = response.data.next
-      } while (next)
-      const videoExtensions = /\.(mp4|m4v|mov|webm|mkv|avi|flv|wmv|ts|mpeg|mpg)$/i
-      const videos = children.filter(c => c.file && (c.video || videoExtensions.test(c.name)))
-        .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }))
-      const currentName = decodeURIComponent(pathname.substring(pathname.lastIndexOf('/') + 1))
-      const index = videos.findIndex(c => c.name === currentName)
-      if (index >= 0 && index + 1 < videos.length) {
-        await router.push(`${parent === '/' ? '' : parent}/${encodeURIComponent(videos[index + 1].name)}`)
-      } else {
-        advancing.current = false
+  useEffect(() => {
+    advancing.current = false
+    setNextEpisode(null)
+    setPreviousEpisode(null)
+    setNextError('')
+    let active = true
+    const loadNeighbors = async () => {
+      try {
+        const pathname = asPath.split('?')[0]
+        const parent = pathname.substring(0, pathname.lastIndexOf('/')) || '/'
+        const token = getStoredToken(parent) || getStoredToken(asPath)
+        const headers = token ? { 'od-protected-token': token } : undefined
+        const children: Array<{ name: string }> = []
+        let cursor: string | undefined
+        do {
+          const response = await axios.get('/api', {
+            params: { path: parent, ...(cursor ? { next: cursor } : {}) }, headers,
+          })
+          children.push(...(response.data.folder?.value || []))
+          cursor = response.data.next
+        } while (cursor)
+        const videoExtensions = /\.(mp4|m4v|mov|webm|mkv|avi|flv|wmv|ts|mpeg|mpg)$/i
+        const videos = children.filter(c => videoExtensions.test(c.name))
+          .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }))
+        const currentName = decodeURIComponent(pathname.substring(pathname.lastIndexOf('/') + 1))
+        const index = videos.findIndex(c => c.name.normalize('NFC').toLowerCase() === currentName.normalize('NFC').toLowerCase())
+        if (index < 0) throw new Error('Current episode not found in folder listing')
+        const toPath = (name: string) => `${parent === '/' ? '' : parent}/${encodeURIComponent(name)}`
+        if (active) {
+          setPreviousEpisode(index > 0 ? toPath(videos[index - 1].name) : null)
+          setNextEpisode(index + 1 < videos.length ? toPath(videos[index + 1].name) : null)
+        }
+      } catch (error) {
+        console.error('Unable to find neighboring episodes', error)
+        if (active) setNextError('Could not find adjacent episodes. Please check the folder listing.')
       }
-    } catch (error) {
-      advancing.current = false
-      console.error('Unable to play next video', error)
     }
-  }
+    loadNeighbors()
+    return () => { active = false }
+  }, [asPath])
+
+  const navigateEpisode = useCallback((destination: string | null) => {
+    if (!destination || advancing.current) return
+    advancing.current = true
+    window.location.assign(destination)
+  }, [])
+  const playNext = useCallback(() => navigateEpisode(nextEpisode), [navigateEpisode, nextEpisode])
+  const onVideoEnded = useCallback(() => {
+    if (autoplayNext) playNext()
+  }, [autoplayNext, playNext])
+  const playPrevious = useCallback(() => navigateEpisode(previousEpisode), [navigateEpisode, previousEpisode])
+
   const hashedToken = getStoredToken(asPath)
   const clipboard = useClipboard()
 
@@ -189,11 +212,29 @@ const VideoPreview: FC<{ file: OdFileObject }> = ({ file }) => {
             subtitle={subtitle}
             isFlv={isFlv}
             mpegts={mpegts}
-            onEnded={playNext}
+            onEnded={onVideoEnded}
           />
         )}
       </PreviewContainer>
 
+      <div className="flex flex-col items-center gap-2 my-3">
+        <div className="flex flex-wrap justify-center gap-3">
+          <button type="button" onClick={playPrevious} disabled={!previousEpisode}
+            className="rounded bg-blue-600 px-5 py-3 text-white disabled:opacity-50">
+            ← Previous Episode
+          </button>
+          <button type="button" onClick={() => setAutoplayNext(value => !value)}
+            aria-pressed={autoplayNext}
+            className={`rounded px-5 py-3 text-white ${autoplayNext ? 'bg-green-700' : 'bg-gray-600'}`}>
+            Autoplay: {autoplayNext ? 'On' : 'Off'}
+          </button>
+          <button type="button" onClick={playNext} disabled={!nextEpisode}
+            className="rounded bg-blue-600 px-5 py-3 text-white disabled:opacity-50">
+            Next Episode →
+          </button>
+        </div>
+        {nextError && <p role="alert" className="text-sm text-red-500">{nextError}</p>}
+      </div>
       <DownloadBtnContainer>
         <div className="flex flex-wrap justify-center gap-2">
           <DownloadButton
