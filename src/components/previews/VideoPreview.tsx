@@ -1,6 +1,6 @@
 import type { OdFileObject } from '../../types'
 
-import { FC, useEffect, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/router'
 
 import axios from 'axios'
@@ -83,7 +83,43 @@ const VideoPlayer: FC<{
 }
 
 const VideoPreview: FC<{ file: OdFileObject }> = ({ file }) => {
-  const { asPath } = useRouter()
+  const router = useRouter()
+  const { asPath } = router
+  const advancing = useRef(false)
+  useEffect(() => { advancing.current = false }, [asPath])
+
+  const playNext = async () => {
+    if (advancing.current) return
+    advancing.current = true
+    try {
+      const pathname = asPath.split('?')[0]
+      const parent = pathname.substring(0, pathname.lastIndexOf('/')) || '/'
+      const token = getStoredToken(parent) || getStoredToken(asPath)
+      const headers = token ? { 'od-protected-token': token } : undefined
+      const children: Array<{ name: string; file?: unknown; video?: unknown }> = []
+      let next: string | undefined
+      do {
+        const response = await axios.get('/api', {
+          params: { path: parent, ...(next ? { next } : {}) }, headers,
+        })
+        children.push(...(response.data.folder?.value || []))
+        next = response.data.next
+      } while (next)
+      const videoExtensions = /\.(mp4|m4v|mov|webm|mkv|avi|flv|wmv|ts|mpeg|mpg)$/i
+      const videos = children.filter(c => c.file && (c.video || videoExtensions.test(c.name)))
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }))
+      const currentName = decodeURIComponent(pathname.substring(pathname.lastIndexOf('/') + 1))
+      const index = videos.findIndex(c => c.name === currentName)
+      if (index >= 0 && index + 1 < videos.length) {
+        await router.push(`${parent === '/' ? '' : parent}/${encodeURIComponent(videos[index + 1].name)}`)
+      } else {
+        advancing.current = false
+      }
+    } catch (error) {
+      advancing.current = false
+      console.error('Unable to play next video', error)
+    }
+  }
   const hashedToken = getStoredToken(asPath)
   const clipboard = useClipboard()
 
@@ -128,6 +164,7 @@ const VideoPreview: FC<{ file: OdFileObject }> = ({ file }) => {
             subtitle={subtitle}
             isFlv={isFlv}
             mpegts={mpegts}
+            onEnded={playNext}
           />
         )}
       </PreviewContainer>
