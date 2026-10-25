@@ -1,6 +1,6 @@
 import type { OdFileObject } from '../../types'
 
-import { FC, useCallback, useEffect, useRef, useState } from 'react'
+import { FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/router'
 
 import axios from 'axios'
@@ -119,47 +119,53 @@ const VideoPlayer: FC<{
   }, [videoUrl, autoplayNext])
 
   // Common plyr configs, including the video source and plyr options
-  const plyrSource = {
+  // Keep the Plyr configuration stable when the surrounding episode controls update.
+  const plyrSource = useMemo(() => ({
     type: 'video',
     title: videoName,
     poster: thumbnail,
     tracks: [{ kind: 'captions', label: videoName, src: '', default: true }],
-  }
-  const plyrOptions = {
+    ...(!isFlv ? { sources: [{ src: videoUrl }] } : {}),
+  }), [videoName, thumbnail, isFlv, videoUrl])
+  const plyrOptions = useMemo(() => ({
     autoplay: true,
     muted: false,
     ratio: `${width ?? 16}:${height ?? 9}`,
     fullscreen: { iosNative: true },
-  }
-  if (!isFlv) {
-    // If the video is not in flv format, we can use the native plyr and add sources directly with the video URL
-    plyrSource['sources'] = [{ src: videoUrl }]
-  }
-  return <Plyr id="plyr" source={plyrSource as any} options={plyrOptions as any}/>
+  }), [width, height])
+  return <Plyr id="plyr" source={plyrSource as any} options={plyrOptions as any} />
 }
 
 const VideoPreview: FC<{ file: OdFileObject }> = ({ file }) => {
   const router = useRouter()
   const { asPath } = router
   const advancing = useRef(false)
+  const [activePath, setActivePath] = useState(asPath)
+  const nextEpisodeRef = useRef<string | null>(null)
+  const autoplayNextRef = useRef(true)
+
   const [nextEpisode, setNextEpisode] = useState<string | null>(null)
   const [previousEpisode, setPreviousEpisode] = useState<string | null>(null)
   const [nextError, setNextError] = useState('')
   const [autoplayNext, setAutoplayNext] = useState(true)
 
+  useEffect(() => { nextEpisodeRef.current = nextEpisode }, [nextEpisode])
+  useEffect(() => { autoplayNextRef.current = autoplayNext }, [autoplayNext])
+
   useEffect(() => {
     advancing.current = false
+    nextEpisodeRef.current = null
     setNextEpisode(null)
     setPreviousEpisode(null)
     setNextError('')
     let active = true
     const loadNeighbors = async () => {
       try {
-        const pathname = asPath.split('?')[0]
+        const pathname = activePath.split('?')[0]
         const parent = pathname.substring(0, pathname.lastIndexOf('/')) || '/'
         // Next.js asPath is URL-encoded; the OneDrive API expects a decoded filesystem path.
         const decodedParent = decodeURIComponent(parent)
-        const token = getStoredToken(parent) || getStoredToken(asPath)
+        const token = getStoredToken(parent) || getStoredToken(activePath)
         const headers = token ? { 'od-protected-token': token } : undefined
         const children: Array<{ name: string }> = []
         let cursor: string | undefined
@@ -179,7 +185,9 @@ const VideoPreview: FC<{ file: OdFileObject }> = ({ file }) => {
         const toPath = (name: string) => `${parent === '/' ? '' : parent}/${encodeURIComponent(name)}`
         if (active) {
           setPreviousEpisode(index > 0 ? toPath(videos[index - 1].name) : null)
-          setNextEpisode(index + 1 < videos.length ? toPath(videos[index + 1].name) : null)
+          const next = index + 1 < videos.length ? toPath(videos[index + 1].name) : null
+          nextEpisodeRef.current = next
+          setNextEpisode(next)
         }
       } catch (error) {
         console.error('Unable to find neighboring episodes', error)
@@ -188,7 +196,7 @@ const VideoPreview: FC<{ file: OdFileObject }> = ({ file }) => {
     }
     loadNeighbors()
     return () => { active = false }
-  }, [asPath])
+  }, [activePath])
 
   const navigateEpisode = useCallback((destination: string | null) => {
     if (!destination || advancing.current) return
@@ -196,25 +204,48 @@ const VideoPreview: FC<{ file: OdFileObject }> = ({ file }) => {
     window.location.assign(destination)
   }, [])
   const playNext = useCallback(() => navigateEpisode(nextEpisode), [navigateEpisode, nextEpisode])
+  // Swap the native video source instead of loading a new page. This preserves
+  // the existing fullscreen player on browsers that permit source changes there.
   const onVideoEnded = useCallback(() => {
-    if (autoplayNext) playNext()
-  }, [autoplayNext, playNext])
+    if (!autoplayNextRef.current || advancing.current) return
+    const destination = nextEpisodeRef.current
+    if (!destination) return
+    // FLV requires its own mpegts player; use the proven navigation fallback.
+    if (/\.flv$/i.test(decodeURIComponent(destination.split('?')[0]))) {
+      window.location.assign(destination)
+      return
+    }
+    const media = document.querySelector<HTMLVideoElement>('video#plyr, .plyr video')
+    if (!media) {
+      window.location.assign(destination)
+      return
+    }
+    advancing.current = true
+    const parent = destination.substring(0, destination.lastIndexOf('/')) || '/'
+    const token = getStoredToken(destination) || getStoredToken(parent)
+    const url = `/api/raw?path=${destination}${token ? `&odpt=${encodeURIComponent(token)}` : ''}`
+    // Do not change the Plyr component's source prop; change its actual media
+    // element so React doesn't destroy the fullscreen player.
+    media.src = url
+    media.load()
+    const start = () => {
+      media.removeEventListener('canplay', start)
+      media.muted = false
+      void media.play().catch(error => console.info('Autoplay was blocked:', error))
+    }
+    media.addEventListener('canplay', start, { once: true })
+    if (media.readyState >= 3) start()
+    setActivePath(destination)
+  }, [])
   const playPrevious = useCallback(() => navigateEpisode(previousEpisode), [navigateEpisode, previousEpisode])
 
-  const hashedToken = getStoredToken(asPath)
+  const hashedToken = getStoredToken(activePath)
   const clipboard = useClipboard()
 
   const [menuOpen, setMenuOpen] = useState(false)
 
-  // OneDrive generates thumbnails for its video files, we pick the thumbnail with the highest resolution
-  const thumbnail = `/api/thumbnail?path=${asPath}&size=large${hashedToken ? `&odpt=${hashedToken}` : ''}`
-
-  // We assume subtitle files are beside the video with the same name, only webvtt '.vtt' files are supported
-  const vtt = `${asPath.substring(0, asPath.lastIndexOf('.'))}.vtt`
-  const subtitle = `/api/raw?path=${vtt}${hashedToken ? `&odpt=${hashedToken}` : ''}`
-
   // We also format the raw video file for the in-browser player as well as all other players
-  const videoUrl = `/api/raw?path=${asPath}${hashedToken ? `&odpt=${hashedToken}` : ''}`
+  const videoUrl = `/api/raw?path=${activePath}${hashedToken ? `&odpt=${hashedToken}` : ''}`
 
   const isFlv = getExtension(file.name) === 'flv'
   const {
@@ -229,7 +260,7 @@ const VideoPreview: FC<{ file: OdFileObject }> = ({ file }) => {
 
   return (
     <>
-      <CustomEmbedLinkMenu path={asPath} menuOpen={menuOpen} setMenuOpen={setMenuOpen} />
+      <CustomEmbedLinkMenu path={activePath} menuOpen={menuOpen} setMenuOpen={setMenuOpen} />
       <PreviewContainer>
         {error ? (
           <FourOhFour errorMsg={error.message} />
@@ -237,13 +268,12 @@ const VideoPreview: FC<{ file: OdFileObject }> = ({ file }) => {
           <Loading loadingText={'Loading FLV extension...'} />
         ) : (
           <VideoPlayer
-            key={asPath}
             videoName={file.name}
-            videoUrl={videoUrl}
+            videoUrl={`/api/raw?path=${asPath}${getStoredToken(asPath) ? `&odpt=${getStoredToken(asPath)}` : ''}`}
             width={file.video?.width}
             height={file.video?.height}
-            thumbnail={thumbnail}
-            subtitle={subtitle}
+            thumbnail={`/api/thumbnail?path=${asPath}&size=large${getStoredToken(asPath) ? `&odpt=${getStoredToken(asPath)}` : ''}`}
+            subtitle={`/api/raw?path=${asPath.substring(0, asPath.lastIndexOf('.'))}.vtt${getStoredToken(asPath) ? `&odpt=${getStoredToken(asPath)}` : ''}`}
             isFlv={isFlv}
             mpegts={mpegts}
             onEnded={onVideoEnded}
